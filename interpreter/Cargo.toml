@@ -1,0 +1,8 @@
+[package]
+name = "interpreter"
+version = "0.1.0"
+authors = ["Lars Mühmel <larsmuehmel@web.de>"]
+edition = "2018"
+
+[dependencies]
+parser = { path = "../parser/" }
