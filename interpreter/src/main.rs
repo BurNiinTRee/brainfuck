@@ -1,7 +1,7 @@
 use interpreter::Interpreter;
-use parser::parse_file;
+use parser::{parse_file, AstWalker};
 use std::{
-    io::{self, Write},
+    io::{self, Read, Write},
     path::PathBuf,
 };
 
@@ -16,7 +16,7 @@ impl Opts {
         let mut path = None;
         let mut args = std::env::args();
         let name = args.next().expect("First argument should always exist");
-        while let Some(arg) = args.next() {
+        for arg in args {
             match arg.as_ref() {
                 "-v" | "--verbose" if !verbose => verbose = true,
                 p if path.is_none() => path = Some(p.into()),
@@ -46,13 +46,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = opts.path;
 
     let program = parse_file(path)?;
-    let mut interpreter = Interpreter::new(program);
-    interpreter.run(
-        std::io::stdin(),
+    let mut interpreter = Interpreter::new(
+        std::io::stdin().bytes(),
         WriteExitBrokenPipe {
             inner: std::io::stdout(),
         },
-    )?;
+    );
+    interpreter.walk(&program)?;
     if opts.verbose {
         println!("ptr: {}\nmem:\n{:?}", interpreter.ptr, interpreter.mem);
     }

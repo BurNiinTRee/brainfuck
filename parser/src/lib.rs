@@ -1,4 +1,7 @@
-use std::{io, iter::Peekable};
+use std::{
+    io::{self, Write},
+    iter::Peekable,
+};
 
 #[derive(Debug)]
 pub enum Primitive {
@@ -58,10 +61,13 @@ impl Program {
         let mut iter = iter.into_iter().filter_map(parse_token).peekable();
         let mut program = Vec::new();
         while iter.peek().is_some() {
-            program.push(parse(&mut iter).ok_or_else(|| io::Error::new(io::ErrorKind::Other,
-                "Your program didn't parse!\nIt probably doesn't have matching '[' and ']'."
-                    .to_string()
-            ))?);
+            program.push(parse(&mut iter).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    "Your program didn't parse!\nIt probably doesn't have matching '[' and ']'."
+                        .to_string(),
+                )
+            })?);
         }
         Ok(Program(program))
     }
@@ -117,6 +123,33 @@ fn parse_token(c: u8) -> Option<Token> {
         b'[' => Some(StartLoop),
         b']' => Some(EndLoop),
         _ => None,
+    }
+}
+
+pub trait Sink {
+    type Err;
+    fn write(&mut self, c: u8) -> Result<(), Self::Err>;
+}
+
+impl<W: Write> Sink for W {
+    type Err = io::Error;
+    fn write(&mut self, c: u8) -> Result<(), Self::Err> {
+        self.write_all(&[c])
+    }
+}
+
+pub trait AstWalker {
+    type Err;
+    fn visit_prim(&mut self, prim: &Primitive) -> Result<(), Self::Err>;
+    fn visit_loop(&mut self, lop: &Program) -> Result<(), Self::Err>;
+    fn walk(&mut self, program: &Program) -> Result<(), Self::Err> {
+        for node in &program.0 {
+            match node {
+                AstNode::Primitive(prim) => self.visit_prim(&prim)?,
+                AstNode::Loop(lop) => self.visit_loop(&lop)?,
+            }
+        }
+        Ok(())
     }
 }
 

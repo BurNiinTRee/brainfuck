@@ -1,8 +1,8 @@
-use parser::{parse_file, AstNode, Primitive, Program};
+use parser::{parse_file, AstWalker, Primitive, Program};
 use std::{
     fs::File,
     io::{self, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 struct Opts {
@@ -53,61 +53,71 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if opts.verbose {
         println!("{:?}", program);
     }
-    compile(opts.out, program)?;
+    let mut compiler = Compiler::new(&opts.out)?;
+    compiler.walk(&program)?;
     Ok(())
 }
 
-fn compile(out: PathBuf, program: Program) -> io::Result<()> {
-    let mut out = File::create(out)?;
-    out.write(
-        b"#include <stdio.h>
+#[derive(Debug)]
+struct Compiler {
+    out: File,
+    depth: u32,
+}
+
+impl Compiler {
+    fn new(path: &Path) -> io::Result<Self> {
+        let mut out = File::create(path)?;
+        out.write_all(
+            b"#include <stdio.h>
 
 int main(void) {
     char mem[30000] = {0};
     char* ptr = mem;
 
 ",
-    )?;
-
-    for node in program.nodes() {
-        compile_node(node, &mut out, 1)?;
+        )?;
+        Ok(Self { out, depth: 1 })
     }
-
-    out.write(b"}")?;
-
-    Ok(())
 }
 
-fn compile_node(node: &AstNode, out: &mut File, depth: u32) -> io::Result<()> {
-    let mut indentation = String::new();
-    for _ in 0..depth {
-        indentation.push_str("    ");
+impl Drop for Compiler {
+    fn drop(&mut self) {
+        self.out.write_all(b"}").expect("Couldn't finalize output!");
     }
-    match node {
-        AstNode::Primitive(p) => {
-            use Primitive::*;
-            writeln!(
-                out,
-                "{}{}",
-                indentation,
-                match p {
-                    Dec => "--*ptr;",
-                    Inc => "++*ptr;",
-                    PtrRight => "++ptr;",
-                    PtrLeft => "--ptr;",
-                    Read => "if ((*ptr = getchar()) == -1) *ptr = 0;",
-                    Write => "putchar(*ptr);",
-                }
-            )?
-        }
+}
 
-        AstNode::Loop(l) => {
-            writeln!(out, "{}while (*ptr) {{", indentation)?;
-            for node in l.nodes() {
-                compile_node(node, out, depth + 1)?;
-            }
-            writeln!(out, "{}}}", indentation)?;
+impl AstWalker for Compiler {
+    type Err = io::Error;
+    fn visit_prim(&mut self, prim: &Primitive) -> io::Result<()> {
+        let mut indentation = String::new();
+        for _ in 0..self.depth {
+            indentation.push_str("    ");
         }
+        use Primitive::*;
+        writeln!(
+            self.out,
+            "{}{}",
+            indentation,
+            match prim {
+                Dec => "--*ptr;",
+                Inc => "++*ptr;",
+                PtrRight => "++ptr;",
+                PtrLeft => "--ptr;",
+                Read => "if ((*ptr = getchar()) == -1) *ptr = 0;",
+                Write => "putchar(*ptr);",
+            }
+        )
     }
-    Ok(())
+    fn visit_loop(&mut self, lop: &Program) -> io::Result<()> {
+        let mut indentation = String::new();
+        for _ in 0..self.depth {
+            indentation.push_str("    ");
+        }
+        writeln!(self.out, "{}while (*ptr) {{", indentation)?;
+        self.depth += 1;
+        self.walk(lop)?;
+        self.depth -= 1;
+        writeln!(self.out, "{}}}", indentation)?;
+        Ok(())
+    }
 }
