@@ -55,6 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut compiler = Compiler::new(&opts.out)?;
     compiler.walk(&program)?;
+    compiler.finalize()?;
     Ok(())
 }
 
@@ -78,11 +79,9 @@ int main(void) {
         )?;
         Ok(Self { out, depth: 1 })
     }
-}
 
-impl Drop for Compiler {
-    fn drop(&mut self) {
-        self.out.write_all(b"}").expect("Couldn't finalize output!");
+    fn finalize(mut self) -> io::Result<()> {
+        self.out.write_all(b"}")
     }
 }
 
