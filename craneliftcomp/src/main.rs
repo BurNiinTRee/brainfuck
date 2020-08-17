@@ -1,10 +1,7 @@
+use anyhow::{Error, Result};
 use cranelift::prelude::*;
-use parser::{parse_file, AstNode, Primitive, Program};
-use std::{
-    fs::File,
-    io::{self, Write},
-    path::PathBuf,
-};
+use parser::{parse_file, AstWalker, Primitive, Program};
+use std::{fs::File, io::Write, path::PathBuf};
 
 struct Opts {
     path: PathBuf,
@@ -58,63 +55,87 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn compile(out: PathBuf, _program: Program) -> io::Result<()> {
+fn compile(out: PathBuf, program: Program) -> Result<()> {
+    let mut flags = settings::builder();
+    flags.set("enable_probestack", "false")?;
     let obj_builder = cranelift_object::ObjectBuilder::new(
-        codegen::isa::lookup(target_lexicon::Triple::host())
-            .expect("A valid triple")
-            .finish(settings::Flags::new(settings::builder())),
+        codegen::isa::lookup(target_lexicon::Triple::host())?.finish(settings::Flags::new(flags)),
         String::from("main_object"),
         cranelift_module::default_libcall_names(),
-    )
-    .expect("obj_builder");
+    )?;
 
     let mut module = cranelift_module::Module::<cranelift_object::ObjectBackend>::new(obj_builder);
+
     let ptr_type = module.target_config().pointer_type();
+    let mut context = FunctionBuilderContext::new();
 
     let mut sig = module.make_signature();
     sig.returns.push(AbiParam::new(types::I32));
 
-    let mut puts_sig = module.make_signature();
-    puts_sig.params.push(AbiParam::new(ptr_type));
-    puts_sig.returns.push(AbiParam::new(types::I32));
-
-    let string_id = module
-        .declare_data("hello", cranelift_module::Linkage::Local, true, false, None)
-        .expect("Declare string");
-
-    let puts_id = module
-        .declare_function("puts", cranelift_module::Linkage::Import, &puts_sig)
-        .expect("Declare puts");
-    let main_id = module
-        .declare_function("main", cranelift_module::Linkage::Export, &sig)
-        .expect("Declare main");
-
-    let mut fn_builder_ctx = FunctionBuilderContext::new();
-    let mut func =
+    let mut main =
         codegen::ir::function::Function::with_name_signature(ExternalName::user(0, 0), sig);
 
-    let puts_ref = module.declare_func_in_func(puts_id, &mut func);
-    let string_ref = module.declare_data_in_func(string_id, &mut func);
-    let mut data_context = cranelift_module::DataContext::new();
-    data_context.define(String::from("Hello World!\0").into_bytes().into_boxed_slice());
-    module.define_data(string_id, &data_context).expect("Define string");
+    let mut putchar_sig = module.make_signature();
+    putchar_sig.params.push(AbiParam::new(types::I32));
 
-    {
-        let mut builder = FunctionBuilder::new(&mut func, &mut fn_builder_ctx);
-        let block = builder.create_block();
-        builder.switch_to_block(block);
+    let mut getchar_sig = module.make_signature();
+    getchar_sig.returns.push(AbiParam::new(types::I32));
 
-        let string_addr = builder.ins().global_value(ptr_type, string_ref);
-        builder.ins().call(puts_ref, &[string_addr]);
-        let ret = builder.ins().iconst(types::I32, Imm64::new(0));
-        builder.ins().return_(&[ret]);
+    let putchar_id = module
+        .declare_function("putchar", cranelift_module::Linkage::Import, &putchar_sig)
+        .expect("Declare putchar");
+    let getchar_id = module
+        .declare_function("getchar", cranelift_module::Linkage::Import, &getchar_sig)
+        .expect("Declare getchar");
+    let putchar = module.declare_func_in_func(putchar_id, &mut main);
+    let getchar = module.declare_func_in_func(getchar_id, &mut main);
 
-        builder.seal_block(block);
-        builder.finalize();
-    }
-    println!("{}", func.display(None));
-    let mut context = codegen::Context::for_function(func);
+    let main_id =
+        module.declare_function("main", cranelift_module::Linkage::Export, &main.signature)?;
+
+    let mut main_builder = FunctionBuilder::new(&mut main, &mut context);
+    let block = main_builder.create_block();
+    main_builder.switch_to_block(block);
+
+    let buffer_size = 30000;
+    let mem = main_builder
+        .create_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, buffer_size));
+
+    let null = main_builder.ins().iconst(types::I8, 0);
+    let size = main_builder.ins().iconst(ptr_type, buffer_size as i64);
+    let mem_addr = main_builder.ins().stack_addr(ptr_type, mem, 0);
+
+    let ptr = main_builder.create_stack_slot(StackSlotData::new(
+        StackSlotKind::ExplicitSlot,
+        ptr_type.bytes(),
+    ));
+
+    main_builder.call_memset(module.target_config(), mem_addr, null, size);
+
+    main_builder.ins().stack_store(mem_addr, ptr, 0);
+
+    let mut comp = CompileFunction {
+        builder: &mut main_builder,
+        ptr_type: module.target_config().pointer_type(),
+        ptr,
+        putchar,
+        getchar,
+    };
+
+    comp.walk(&program)?;
+
+    let ret = comp.builder.ins().iconst(types::I32, 0);
+
+    comp.builder.ins().return_(&[ret]);
+    let current_block = comp.builder.current_block().expect("At this point there should at least be the block created above");
+    comp.builder.seal_block(current_block);
+    comp.builder.finalize();
+
+    println!("{}", main.display(None));
+
+    let mut context = codegen::Context::for_function(main);
     let mut trap_sink = codegen::binemit::NullTrapSink {};
+
     module
         .define_function(main_id, &mut context, &mut trap_sink)
         .expect("Define main");
@@ -128,37 +149,94 @@ fn compile(out: PathBuf, _program: Program) -> io::Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-fn compile_node(node: &AstNode, out: &mut File, depth: u32) -> io::Result<()> {
-    let mut indentation = String::new();
-    for _ in 0..depth {
-        indentation.push_str("    ");
-    }
-    match node {
-        AstNode::Primitive(p) => {
-            use Primitive::*;
-            writeln!(
-                out,
-                "{}{}",
-                indentation,
-                match p {
-                    Dec => "--*ptr;",
-                    Inc => "++*ptr;",
-                    PtrRight => "++ptr;",
-                    PtrLeft => "--ptr;",
-                    Read => "if ((*ptr = getchar()) == -1) *ptr = 0;",
-                    Write => "putchar(*ptr);",
-                }
-            )?
-        }
+struct CompileFunction<'a> {
+    builder: &'a mut FunctionBuilder<'a>,
+    ptr: codegen::ir::entities::StackSlot,
+    ptr_type: Type,
+    putchar: codegen::ir::entities::FuncRef,
+    getchar: codegen::ir::entities::FuncRef,
+}
 
-        AstNode::Loop(l) => {
-            writeln!(out, "{}while (*ptr) {{", indentation)?;
-            for node in l.nodes() {
-                compile_node(node, out, depth + 1)?;
+impl<'a> AstWalker for CompileFunction<'a> {
+    type Err = Error;
+    fn visit_prim(&mut self, prim: &Primitive) -> Result<()> {
+        use Primitive::*;
+        match prim {
+            PtrRight => {
+                let old_ptr = self.builder.ins().stack_load(self.ptr_type, self.ptr, 0);
+                let new_ptr = self.builder.ins().iadd_imm(old_ptr, 1);
+                self.builder.ins().stack_store(new_ptr, self.ptr, 0);
             }
-            writeln!(out, "{}}}", indentation)?;
+            PtrLeft => {
+                let old_ptr = self.builder.ins().stack_load(self.ptr_type, self.ptr, 0);
+                let new_ptr = self.builder.ins().iadd_imm(old_ptr, -1);
+                self.builder.ins().stack_store(new_ptr, self.ptr, 0);
+            }
+            Inc => {
+                let ptr = self.builder.ins().stack_load(self.ptr_type, self.ptr, 0);
+                let old_c = self.builder.ins().load(types::I8, MemFlags::new(), ptr, 0);
+                let new_c = self.builder.ins().iadd_imm(old_c, 1);
+                self.builder.ins().store(MemFlags::new(), new_c, ptr, 0);
+            }
+            Dec => {
+                let ptr = self.builder.ins().stack_load(self.ptr_type, self.ptr, 0);
+                let old_c = self.builder.ins().load(types::I8, MemFlags::new(), ptr, 0);
+                let new_c = self.builder.ins().iadd_imm(old_c, -1);
+                self.builder.ins().store(MemFlags::new(), new_c, ptr, 0);
+            }
+            Read => {
+                let getc_ins = self.builder.ins().call(self.getchar, &[]);
+                let new_c = self.builder.inst_results(getc_ins)[0];
+                let ptr = self.builder.ins().stack_load(self.ptr_type, self.ptr, 0);
+                self.builder.ins().store(MemFlags::new(), new_c, ptr, 0);
+            }
+            Write => {
+                let ptr = self.builder.ins().stack_load(self.ptr_type, self.ptr, 0);
+                let c = self
+                    .builder
+                    .ins()
+                    .uload8(types::I32, MemFlags::new(), ptr, 0);
+                let putc_ins = self.builder.ins().call(self.putchar, &[c]);
+                self.builder.inst_results(putc_ins);
+            }
         }
+        Ok(())
     }
-    Ok(())
+
+    fn visit_loop(&mut self, lop: &Program) -> Result<()> {
+        let loop_header = self.builder.create_block();
+        let prev_block = self
+            .builder
+            .current_block()
+            .expect("We should always have at least one block setup by the `compile` function!");
+
+        let loop_continuation = self.builder.create_block();
+
+        let loop_body = self.builder.create_block();
+        
+        let jump = self.builder.ins().jump(loop_header, &[]);
+        self.builder.inst_results(jump);
+        self.builder.switch_to_block(loop_header);
+        self.builder.seal_block(prev_block);
+
+        let ptr = self.builder.ins().stack_load(self.ptr_type, self.ptr, 0);
+        let c = self.builder.ins().load(types::I8, MemFlags::new(), ptr, 0);
+
+        let true_branch = self.builder.ins().brnz(c, loop_body, &[]);
+        let false_branch = self.builder.ins().jump(loop_continuation, &[]);
+
+
+        self.builder.switch_to_block(loop_body);
+        self.walk(lop)?;
+
+        let end_body = self.builder.current_block().unwrap();
+        let ret = self.builder.ins().jump(loop_header, &[]);
+        self.builder.seal_block(end_body);
+        self.builder.seal_block(loop_header);
+
+        self.builder.switch_to_block(loop_continuation);
+
+
+        Ok(())
+    }
 }

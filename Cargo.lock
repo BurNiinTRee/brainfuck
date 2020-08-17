@@ -132,6 +132,7 @@ dependencies = [
 name = "craneliftcomp"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "cranelift",
  "cranelift-module",
  "cranelift-object",
