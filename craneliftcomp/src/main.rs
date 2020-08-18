@@ -51,11 +51,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if opts.verbose {
         println!("{:?}", program);
     }
-    compile(opts.out, program)?;
+    compile(opts.out, program, opts.verbose)?;
     Ok(())
 }
 
-fn compile(out: PathBuf, program: Program) -> Result<()> {
+fn compile(out: PathBuf, program: Program, verbose: bool) -> Result<()> {
     let mut flags = settings::builder();
     flags.set("opt_level", "speed")?;
     flags.set("enable_probestack", "false")?;
@@ -132,7 +132,9 @@ fn compile(out: PathBuf, program: Program) -> Result<()> {
     comp.builder.seal_block(current_block);
     comp.builder.finalize();
 
-    println!("{}", main.display(None));
+    if verbose {
+        println!("{}", main.display(None));
+    }
 
     let mut context = codegen::Context::for_function(main);
     let mut trap_sink = codegen::binemit::NullTrapSink {};
