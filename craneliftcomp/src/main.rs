@@ -115,7 +115,6 @@ fn compile(out: PathBuf, program: Program) -> Result<()> {
 
     let mut comp = CompileFunction {
         builder: &mut main_builder,
-        ptr_type: module.target_config().pointer_type(),
         ptr_var,
         putchar,
         getchar,
@@ -154,7 +153,6 @@ fn compile(out: PathBuf, program: Program) -> Result<()> {
 struct CompileFunction<'a> {
     builder: &'a mut FunctionBuilder<'a>,
     ptr_var: Variable,
-    ptr_type: Type,
     putchar: codegen::ir::entities::FuncRef,
     getchar: codegen::ir::entities::FuncRef,
 }
@@ -224,14 +222,14 @@ impl<'a> AstWalker for CompileFunction<'a> {
         let ptr = self.builder.use_var(self.ptr_var);
         let c = self.builder.ins().load(types::I8, MemFlags::new(), ptr, 0);
 
-        let true_branch = self.builder.ins().brnz(c, loop_body, &[]);
-        let false_branch = self.builder.ins().jump(loop_continuation, &[]);
+        self.builder.ins().brnz(c, loop_body, &[]);
+        self.builder.ins().jump(loop_continuation, &[]);
 
         self.builder.switch_to_block(loop_body);
         self.walk(lop)?;
 
         let end_body = self.builder.current_block().unwrap();
-        let ret = self.builder.ins().jump(loop_header, &[]);
+        self.builder.ins().jump(loop_header, &[]);
         self.builder.seal_block(end_body);
         self.builder.seal_block(loop_header);
 
