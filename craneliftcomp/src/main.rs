@@ -57,6 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 fn compile(out: PathBuf, program: Program) -> Result<()> {
     let mut flags = settings::builder();
+    flags.set("opt_level", "speed")?;
     flags.set("enable_probestack", "false")?;
     let obj_builder = cranelift_object::ObjectBuilder::new(
         codegen::isa::lookup(target_lexicon::Triple::host())?.finish(settings::Flags::new(flags)),
