@@ -94,6 +94,7 @@ fn compile(out: PathBuf, program: Program) -> Result<()> {
         module.declare_function("main", cranelift_module::Linkage::Export, &main.signature)?;
 
     let mut main_builder = FunctionBuilder::new(&mut main, &mut context);
+
     let block = main_builder.create_block();
     main_builder.switch_to_block(block);
 
@@ -105,19 +106,16 @@ fn compile(out: PathBuf, program: Program) -> Result<()> {
     let size = main_builder.ins().iconst(ptr_type, buffer_size as i64);
     let mem_addr = main_builder.ins().stack_addr(ptr_type, mem, 0);
 
-    let ptr = main_builder.create_stack_slot(StackSlotData::new(
-        StackSlotKind::ExplicitSlot,
-        ptr_type.bytes(),
-    ));
+    let ptr_var = Variable::new(0);
+    main_builder.declare_var(ptr_var, ptr_type);
+    main_builder.def_var(ptr_var, mem_addr);
 
     main_builder.call_memset(module.target_config(), mem_addr, null, size);
-
-    main_builder.ins().stack_store(mem_addr, ptr, 0);
 
     let mut comp = CompileFunction {
         builder: &mut main_builder,
         ptr_type: module.target_config().pointer_type(),
-        ptr,
+        ptr_var,
         putchar,
         getchar,
     };
@@ -127,7 +125,10 @@ fn compile(out: PathBuf, program: Program) -> Result<()> {
     let ret = comp.builder.ins().iconst(types::I32, 0);
 
     comp.builder.ins().return_(&[ret]);
-    let current_block = comp.builder.current_block().expect("At this point there should at least be the block created above");
+    let current_block = comp
+        .builder
+        .current_block()
+        .expect("At this point there should at least be the block created above");
     comp.builder.seal_block(current_block);
     comp.builder.finalize();
 
@@ -151,7 +152,7 @@ fn compile(out: PathBuf, program: Program) -> Result<()> {
 
 struct CompileFunction<'a> {
     builder: &'a mut FunctionBuilder<'a>,
-    ptr: codegen::ir::entities::StackSlot,
+    ptr_var: Variable,
     ptr_type: Type,
     putchar: codegen::ir::entities::FuncRef,
     getchar: codegen::ir::entities::FuncRef,
@@ -163,23 +164,23 @@ impl<'a> AstWalker for CompileFunction<'a> {
         use Primitive::*;
         match prim {
             PtrRight => {
-                let old_ptr = self.builder.ins().stack_load(self.ptr_type, self.ptr, 0);
+                let old_ptr = self.builder.use_var(self.ptr_var);
                 let new_ptr = self.builder.ins().iadd_imm(old_ptr, 1);
-                self.builder.ins().stack_store(new_ptr, self.ptr, 0);
+                self.builder.def_var(self.ptr_var, new_ptr);
             }
             PtrLeft => {
-                let old_ptr = self.builder.ins().stack_load(self.ptr_type, self.ptr, 0);
+                let old_ptr = self.builder.use_var(self.ptr_var);
                 let new_ptr = self.builder.ins().iadd_imm(old_ptr, -1);
-                self.builder.ins().stack_store(new_ptr, self.ptr, 0);
+                self.builder.def_var(self.ptr_var, new_ptr);
             }
             Inc => {
-                let ptr = self.builder.ins().stack_load(self.ptr_type, self.ptr, 0);
+                let ptr = self.builder.use_var(self.ptr_var);
                 let old_c = self.builder.ins().load(types::I8, MemFlags::new(), ptr, 0);
                 let new_c = self.builder.ins().iadd_imm(old_c, 1);
                 self.builder.ins().store(MemFlags::new(), new_c, ptr, 0);
             }
             Dec => {
-                let ptr = self.builder.ins().stack_load(self.ptr_type, self.ptr, 0);
+                let ptr = self.builder.use_var(self.ptr_var);
                 let old_c = self.builder.ins().load(types::I8, MemFlags::new(), ptr, 0);
                 let new_c = self.builder.ins().iadd_imm(old_c, -1);
                 self.builder.ins().store(MemFlags::new(), new_c, ptr, 0);
@@ -187,11 +188,11 @@ impl<'a> AstWalker for CompileFunction<'a> {
             Read => {
                 let getc_ins = self.builder.ins().call(self.getchar, &[]);
                 let new_c = self.builder.inst_results(getc_ins)[0];
-                let ptr = self.builder.ins().stack_load(self.ptr_type, self.ptr, 0);
+                let ptr = self.builder.use_var(self.ptr_var);
                 self.builder.ins().store(MemFlags::new(), new_c, ptr, 0);
             }
             Write => {
-                let ptr = self.builder.ins().stack_load(self.ptr_type, self.ptr, 0);
+                let ptr = self.builder.use_var(self.ptr_var);
                 let c = self
                     .builder
                     .ins()
@@ -213,18 +214,17 @@ impl<'a> AstWalker for CompileFunction<'a> {
         let loop_continuation = self.builder.create_block();
 
         let loop_body = self.builder.create_block();
-        
+
         let jump = self.builder.ins().jump(loop_header, &[]);
         self.builder.inst_results(jump);
         self.builder.switch_to_block(loop_header);
         self.builder.seal_block(prev_block);
 
-        let ptr = self.builder.ins().stack_load(self.ptr_type, self.ptr, 0);
+        let ptr = self.builder.use_var(self.ptr_var);
         let c = self.builder.ins().load(types::I8, MemFlags::new(), ptr, 0);
 
         let true_branch = self.builder.ins().brnz(c, loop_body, &[]);
         let false_branch = self.builder.ins().jump(loop_continuation, &[]);
-
 
         self.builder.switch_to_block(loop_body);
         self.walk(lop)?;
@@ -235,7 +235,6 @@ impl<'a> AstWalker for CompileFunction<'a> {
         self.builder.seal_block(loop_header);
 
         self.builder.switch_to_block(loop_continuation);
-
 
         Ok(())
     }
