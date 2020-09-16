@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Write},
+    io,
     iter::Peekable,
 };
 
@@ -126,17 +126,6 @@ fn parse_token(c: u8) -> Option<Token> {
     }
 }
 
-pub trait Sink {
-    type Err;
-    fn write(&mut self, c: u8) -> Result<(), Self::Err>;
-}
-
-impl<W: Write> Sink for W {
-    type Err = io::Error;
-    fn write(&mut self, c: u8) -> Result<(), Self::Err> {
-        self.write_all(&[c])
-    }
-}
 
 pub trait AstWalker {
     type Err;

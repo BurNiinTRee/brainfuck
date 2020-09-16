@@ -1,5 +1,5 @@
-use parser::{AstWalker, Primitive, Program, Sink};
-use std::io;
+use parser::{AstWalker, Primitive, Program};
+use std::io::{self, Write};
 
 #[derive(Debug)]
 pub struct Interpreter<R, W> {
@@ -66,4 +66,16 @@ fn mem_mut(mem: &mut Vec<u8>, ptr: usize) -> &mut u8 {
         mem.resize(ptr + 1, 0);
     }
     &mut mem[ptr]
+}
+
+pub trait Sink {
+    type Err;
+    fn write(&mut self, c: u8) -> Result<(), Self::Err>;
+}
+
+impl<W: Write> Sink for W {
+    type Err = io::Error;
+    fn write(&mut self, c: u8) -> Result<(), Self::Err> {
+        self.write_all(&[c])
+    }
 }

@@ -26,7 +26,7 @@ impl Opts {
     {} [-v|--verbose] [filename]
 
 -v --verbose    If given, prints out the state of the interpreter after execution.
-filename        The program to execut (default: main.bf).
+filename        The program to execute (default: main.bf).
 ",
                         name
                     );
