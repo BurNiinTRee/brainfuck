@@ -5,16 +5,25 @@
 
   outputs = { self, nixpkgs, import-cargo }: {
 
-    packages.x86_64-linux.brainfucks = let importCargo = import-cargo.builders.importCargo; in
-      with import nixpkgs { system = "x86_64-linux"; };
+    packages.x86_64-linux.brainfucks =
+      let importCargo = import-cargo.builders.importCargo;
+      in with import nixpkgs { system = "x86_64-linux"; };
       stdenv.mkDerivation {
         name = "brainfucks";
         src = self;
         nativeBuildInputs = [
-          (importCargo { lockFile = ./Cargo.lock; inherit pkgs; }).cargoHome
+          (importCargo {
+            lockFile = ./Cargo.lock;
+            inherit pkgs;
+          }).cargoHome
+          gtk3
 
-          rustc cargo
+          rustc
+          cargo
         ];
+        shellHook = ''
+          unset CARGO_HOME
+        '';
         buildPhase = ''
           cargo build --release --offline
         '';
@@ -24,7 +33,6 @@
           done
         '';
       };
-
 
     defaultPackage.x86_64-linux = self.packages.x86_64-linux.brainfucks;
 
