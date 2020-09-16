@@ -28,7 +28,7 @@
           cargo build --release --offline
         '';
         installPhase = ''
-          for bin in interpreter comp2c craneliftcomp; do
+          for bin in gui interpreter comp2c craneliftcomp; do
             install -Dm775 ./target/release/$bin $out/bin/$bin
           done
         '';
