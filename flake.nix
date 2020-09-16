@@ -16,7 +16,6 @@
             lockFile = ./Cargo.lock;
             inherit pkgs;
           }).cargoHome
-          gtk3
 
           rustc
           cargo
