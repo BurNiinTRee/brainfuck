@@ -62,7 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[derive(Debug)]
 struct Compiler {
     out: File,
-    depth: u32,
+    indent: String,
 }
 
 impl Compiler {
@@ -77,7 +77,10 @@ int main(void) {
 
 ",
         )?;
-        Ok(Self { out, depth: 1 })
+        Ok(Self {
+            out,
+            indent: "    ".to_owned(),
+        })
     }
 
     fn finalize(mut self) -> io::Result<()> {
@@ -88,15 +91,11 @@ int main(void) {
 impl AstWalker for Compiler {
     type Err = io::Error;
     fn visit_prim(&mut self, prim: &Primitive) -> io::Result<()> {
-        let mut indentation = String::new();
-        for _ in 0..self.depth {
-            indentation.push_str("    ");
-        }
         use Primitive::*;
         writeln!(
             self.out,
             "{}{}",
-            indentation,
+            self.indent,
             match prim {
                 Dec => "--*ptr;",
                 Inc => "++*ptr;",
@@ -108,15 +107,11 @@ impl AstWalker for Compiler {
         )
     }
     fn visit_loop(&mut self, lop: &Program) -> io::Result<()> {
-        let mut indentation = String::new();
-        for _ in 0..self.depth {
-            indentation.push_str("    ");
-        }
-        writeln!(self.out, "{}while (*ptr) {{", indentation)?;
-        self.depth += 1;
+        writeln!(self.out, "{}while (*ptr) {{", self.indent)?;
+        self.indent.push_str("    ");
         self.walk(lop)?;
-        self.depth -= 1;
-        writeln!(self.out, "{}}}", indentation)?;
+        self.indent.truncate(self.indent.len() - 4);
+        writeln!(self.out, "{}}}", self.indent)?;
         Ok(())
     }
 }
